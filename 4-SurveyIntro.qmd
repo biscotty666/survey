@@ -1,0 +1,275 @@
+---
+title: "4-SurveyIntro"
+format: gfm
+---
+
+
+```{r, setup, include=FALSE}
+knitr::opts_chunk$set(paged.print = FALSE)
+```
+
+```{r}
+#| message: false
+library(tidyverse)
+library(srvyr)
+```
+
+# Survey Analysis Process
+
+There is a general process for analyzing data to create estimates with {srvyr} package:
+
+1. Create a tbl_svy object (a survey object) using: as_survey_design() or as_survey_rep()
+2. Subset data (if needed) using filter() (to create subpopulations)
+3. Specify domains of analysis using group_by()
+4. Within summarize(), specify variables to calculate, including means, totals, proportions, quantiles, and more
+
+
+# Load the data
+
+```{r}
+load("data/anes_2020.rda")
+```
+
+```{r}
+anes_2020 %>%
+  select(-matches("V\\d")) %>%
+  glimpse()
+```
+
+```{r}
+load("data/recs_2020.rda")
+```
+
+```{r}
+recs_2020 %>%
+  select(-matches("^NWEIGHT")) %>%
+  glimpse()
+```
+
+# Design Objects
+
+## ANES
+
+```{r}
+#| message: false
+library(censusapi)
+```
+
+Get March 2020 census data for population.
+
+```{r}
+cps_state_in <- getCensus(
+  name = "cps/basic/mar",
+  vintage = 2020,
+  region = "state",
+  vars = c(
+    "HRMONTH", "HRYEAR4",
+    "PRTAGE", "PRCITSHP", "PWSSWGT"
+  ),
+  key = Sys.getenv("CENSUS_KEY")
+)
+
+cps_state <- cps_state_in %>%
+  as_tibble() %>%
+  mutate(across(
+    .cols = everything(),
+    .fns = as.numeric
+  ))
+```
+
+```{r}
+glimpse(cps_state)
+```
+```{r}
+cps_state %>% distinct(HRMONTH, HRYEAR4)
+```
+
+Only include those 18 years or older and only US citizens.
+
+```{r}
+cps_narrow_resp <- cps_state %>%
+  filter(
+    PRTAGE >= 18,
+    PRCITSHP %in% c(1:4)
+  )
+```
+
+To calculate the U.S. population from the filtered data, we sum the person weights (PWSSWGT):
+
+```{r}
+target_pop <- cps_narrow_resp %>%
+  pull(PWSSWGT) %>%
+  sum()
+scales::comma(target_pop)
+```
+
+Using the anes_2020 data, we adjust the weighting variable (V200010b) using the population of interest we just calculated (targetpop). We determine the proportion of the total weight for each individual weight (V200010b / sum(V200010b)) and then multiply that proportion by the calculated population of interest. 
+
+```{r}
+anes_adj_wgt <- anes_2020 %>%
+  mutate(weight = V200010b / sum(V200010b) * target_pop)
+```
+
+Once we have the adjusted weights, we can refer to the rest of the documentation to create the survey design. The documentation indicates that the study uses a stratified cluster sampling design. Therefore, we need to specify variables for strata and ids (cluster) and fill in the nest argument. The documentation provides guidance on which strata and cluster variables to use depending on whether we are analyzing pre- or post-election data. In this book, we analyze post-election data, so we need to use the post-election weight V200010b, strata variable V200010d, and Primary Sampling Unit (PSU)/cluster variable V200010c. Additionally, we set nest=TRUE to ensure the clusters are nested within the strata. 
+
+```{r}
+anes_des <- anes_adj_wgt %>%
+  as_survey_design(
+    weights = weight,
+    strata = V200010d,
+    ids = V200010c,
+    nest = T
+  )
+anes_des
+```
+
+## Residential Energy Consumption Survey
+
+The RECS documentation (U.S. Energy Information Administration 2023b) provides information on the survey’s sampling and weighting implications for analysis. The documentation shows the 2020 RECS uses Jackknife weights, where the main analytic weight is NWEIGHT, and the Jackknife weights are NWEIGHT1-NWEIGHT60. We can specify these in the weights and repweights arguments in the survey design object code, respectively.
+
+With Jackknife weights, additional information is required: type, scale, and mse. Chapter 10 discusses in depth each of these arguments; but to quickly get started, the RECS documentation lets us know that type=JK1, scale=59/60, and mse = TRUE. 
+
+```{r}
+recs_des <- recs_2020 %>%
+  as_survey_rep(
+    weights = NWEIGHT,
+    repweights = NWEIGHT1:NWEIGHT60,
+    type = "JK1",
+    scale = 59 / 60,
+    mse = T
+  )
+recs_des
+```
+
+# `SRVYR` and `DPLYR` packages
+
+The towny dataset provides population data for municipalities in Ontario, Canada on census years between 1996 and 2021. Taking a look at towny with dplyr::glimpse(), we can see the dataset has 25 columns with a mix of character and numeric data.
+
+```{r}
+towny <- gt::towny
+glimpse(towny)
+```
+
+```{r}
+class(towny)
+```
+
+```{r}
+#| message: false
+library(survey)
+```
+
+The {survey} package contains datasets related to the California Academic Performance Index, which measures student performance in schools with at least 100 students in California. We can access these datasets by loading the {survey} package and running data(api).
+
+Let’s work with the apistrat dataset, which is a stratified random sample, stratified by school type (stype) with three levels: E for elementary school, M for middle school, and H for high school. We first create the survey design object (see Chapter 10 for more information). The sample is stratified by the stype variable and the sampling weights are found in the pw variable. We can use this information to construct the design object, apistrat_des. 
+
+```{r}
+data(api)
+
+apistrat_des <- apistrat %>%
+  as_survey_design(
+    strata = stype,
+    weights = pw
+  )
+class(apistrat_des)
+```
+
+## Function comparison examples
+
+> Calculate mean and median
+
+```{r}
+towny %>%
+  summarise(
+    area_mean = mean(land_area_km2),
+    area_median = median(land_area_km2)
+  )
+```
+
+```{r}
+apistrat_des %>%
+  summarize(
+    api00_mean = survey_mean(api00),
+    api00_median = survey_median(api00)
+  )
+```
+
+> Calculate across select columns
+
+```{r}
+towny %>% summarise(across(
+  starts_with("population"),
+  ~ mean(.x, na.rm = T)
+))
+```
+
+```{r}
+towny %>% summarise(across(
+  starts_with("population"),
+  ~ mean(.x, na.rm = T)
+))
+```
+
+```{r}
+apistrat_des %>% summarise(across(
+  starts_with("api"),
+  survey_mean
+))
+```
+
+> Mutate and filter
+
+```{r}
+apistrat_des_mod <- apistrat_des %>%
+  mutate(api_diff = api00 - api99) %>%
+  filter(stype == "E") %>%
+  select(stype, api00, api_diff, api_students = api.stu)
+
+apistrat_des_mod
+```
+
+> Grouping
+
+```{r}
+towny %>%
+  group_by(csd_type) %>%
+  dplyr::summarise(
+    area_mean = mean(land_area_km2),
+    area_median = median(land_area_km2)
+  )
+```
+
+```{r}
+apistrat_des %>%
+  group_by(stype) %>%
+  summarise(
+    api00_mean = survey_mean(api00),
+    api00_median = survey_median(api00)
+  )
+```
+
+Alternative syntax
+
+```{r}
+towny %>%
+  dplyr::summarise(
+    area_mean = mean(land_area_km2),
+    area_median = median(land_area_km2),
+    .by = csd_type
+  )
+```
+
+```{r}
+apistrat_des %>%
+  summarise(
+    api00_mean = survey_mean(api00),
+    api00_median = survey_median(api00),
+    .by = stype
+  )
+```
+
+
+
+
+
+
