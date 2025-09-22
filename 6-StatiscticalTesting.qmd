@@ -1,0 +1,494 @@
+---
+title: "Statistical Testing"
+format: gfm
+---
+
+
+```{r, setup, include=FALSE}
+knitr::opts_chunk$set(paged.print = FALSE)
+```
+
+
+# Setup
+
+Reference prior chapter
+
+```{r}
+#| message: false
+library(tidyverse)
+library(survey)
+library(srvyr)
+library(broom)
+library(gt)
+library(prettyunits)
+load("data/anes_2020.rda")
+load("data/recs_2020.rda")
+```
+
+```{r}
+targetpop <- 231592693
+
+anes_adjwgt <- anes_2020 %>%
+  mutate(Weight = Weight / sum(Weight) * targetpop)
+
+anes_des <- anes_adjwgt %>%
+  as_survey_design(
+    weights = Weight,
+    strata = Stratum,
+    ids = VarUnit,
+    nest = TRUE
+  )
+recs_des <- recs_2020 %>%
+  as_survey_rep(
+    weights = NWEIGHT,
+    repweights = NWEIGHT1:NWEIGHT60,
+    type = "JK1",
+    scale = 59 / 60,
+    mse = TRUE
+  )
+```
+
+# Introduction
+
+The general idea of statistical testing is the same for data obtained through surveys and data obtained through other methods, where we compare the point estimates and uncertainty estimates of each statistic to see if statistically significant differences exist. However, statistical testing for complex surveys involves additional considerations due to the need to account for the sampling design in order to obtain accurate uncertainty estimates.
+
+The functions in the {survey} package allow for the correct estimation of the uncertainty estimates (e.g., standard deviations and confidence intervals). This chapter covers the following statistical tests with survey data and the following functions from the {survey} package (Lumley 2010):
+
+- Comparison of proportions (svyttest())
+- Comparison of means (svyttest())
+- Goodness-of-fit tests (svygofchisq())
+- Tests of independence (svychisq())
+- Tests of homogeneity (svychisq())
+
+# Comparison of Proportions and Means
+
+Many of the arguments are the same between `t.test()` and `svyttest()`, but there are a few key differences:
+
+- We need to use the survey design object instead of the original data frame
+- We can only use a formula and not separate x and y data
+- The confidence level cannot be specified and is always set to 95%. However, we show examples of how the confidence level can be changed after running the `svyttest()` function by using the `confint()` function.
+
+```
+svyttest(formula,
+         design,
+         ...)
+```
+
+The arguments are:
+
+- formula: Formula, outcome~group for two-sample, outcome~0 or outcome~1 for one-sample. The group variable must be a factor or character with two levels, or be coded 0/1 or 1/2. We give more details on formula set-up below for different types of tests.
+- design: survey design object
+- ...: This passes options on for one-sided tests only, and thus, we can specify na.rm=TRUE
+
+## One-sample t-test for mean
+
+- $H_0:\mu =68$ where μ is the average temperature U.S. households set their thermostat to in the summer at night
+- $H_A:\mu \ne 68$
+
+```{r}
+ttest_ex1 <- recs_des %>%
+  svyttest(
+    formula = SummerTempNight - 68 ~ 0,
+    design = .,
+    na.rm = T
+  )
+ttest_ex1
+```
+
+```{r}
+ttest_ex1$estimate + 68
+```
+
+Or:
+
+```{r}
+recs_des %>%
+  summarise(mu = survey_mean(SummerTempNight, na.rm = T))
+```
+
+To see confidence levels other than 95%:
+
+```{r}
+confint(ttest_ex1)
+confint(ttest_ex1, level = 0.80)
+```
+
+## One-sample t-test for proportion
+
+ Let’s look at the proportion of U.S. households that use A/C in their homes.
+ 
+```{r}
+#| message: false
+#| warning: false
+ac_prop <- recs_des %>%
+  group_by(ACUsed) %>%
+  summarise(p = survey_prop())
+ac_prop
+```
+ 
+Based on this, 88.7% of U.S. households use A/C in their homes. If we wanted to know if this differs from 90%, we could set up our hypothesis as follows:
+
+- $H_0:p =0.90$ where $p$ is the proportion of U.S. households that use A/C in their homes
+- $H_A:p \ne 0.90$
+
+```{r}
+ttest_ex2 <- recs_des %>%
+  svyttest(
+    formula = (ACUsed == TRUE) - 0.90 ~ 0,
+    design = .,
+    na.rm = T
+  )
+ttest_ex2
+```
+
+```{r}
+tidy(ttest_ex2)
+```
+
+```{r}
+tidy(ttest_ex2) %>%
+  mutate(p.value = pretty_p_value(p.value)) %>%
+  gt() %>%
+  fmt_number(decimals = 3)
+```
+
+The estimate differs from Example 1 in that it does not display $p−0.90$ but rather $p$, or the difference between the U.S. households that use A/C and our comparison proportion. We can see that there is a difference of —1.35 percentage points. Additionally, the t-statistic value in the `statistic` column is —4.4, and the p-value is <0.0001. These results indicate that fewer than 90% of U.S. households use A/C in their homes. 
+
+## Unpaired two-sample t-test
+
+ In addition to `ACUsed`, another variable in the RECS data is a household’s total electric cost in dollars (`DOLLAREL`).To see if U.S. households with A/C had higher electrical bills than those without, we can set up the hypothesis as follows:
+
+- $H_0:\mu_{AC}=\mu_{noAC}$ where $\mu_{AC}$ is the electrical bill cost for U.S. households that used A/C, and $\mu_{noAC}$ is the electrical bill cost for U.S. households that did not use A/C
+- $H_A:\mu_{AC}\ne\mu_{noAC}$
+
+```{r}
+recs_des %>%
+  group_by(ACUsed) %>%
+  summarize(mean = survey_mean(DOLLAREL, na.rm = TRUE))
+```
+
+```{r}
+ttest_ex3 <- recs_des %>%
+  svyttest(
+    formula = DOLLAREL ~ ACUsed,
+    design = .,
+    na.rm = T
+  )
+tidy(ttest_ex3)
+```
+
+```{r}
+tidy(ttest_ex3) %>%
+  mutate(p.value = pretty_p_value(p.value)) %>%
+  gt() %>%
+  fmt_number()
+```
+
+The results in Table 6.2 indicate that the difference in electrical bills for those who used A/C and those who did not is, on average, $365.72. The difference appears to be statistically significant as the t-statistic is 21.3 and the p-value is <0.0001. Households that used A/C spent, on average, $365.72 more in 2020 on electricity than households without A/C. 
+
+## Paired two-sample t-test
+
+ Let’s say we want to test whether the temperature at which U.S. households set their thermostat at night differs depending on the season (comparing summer and winter17 temperatures). We could set up the hypothesis as follows:
+
+- $H_0:\mu_{summer}=\mu_{winter}$ where $\mu_{summer}$ is the temperature that U.S. households set their thermostat to during summer nights, and $\mu_{winter}$ is the temperature that U.S. households set their thermostat to during winter nights
+- $H_A:\mu_{summer}\ne\mu_{winter}$
+
+```{r}
+ttest_ex4 <- recs_des %>%
+  svyttest(
+    design = .,
+    formula = SummerTempNight - WinterTempNight ~ 0,
+    na.rm = T
+  )
+tidy(ttest_ex4) %>%
+  mutate(p.value = pretty_p_value(p.value)) %>%
+  gt() %>%
+  fmt_number()
+```
+
+The results displayed in Table 6.3 indicate that U.S. households set their thermostat on average 2.9∘F warmer in summer nights than winter nights, which is statistically significant (t = 50.8, p-value is <0.0001).
+
+# Chi-squared Tests
+
+Chi-squared tests ($\chi^2$) allow us to examine multiple proportions using a goodness-of-fit test, a test of independence, or a test of homogeneity. These three tests have the same $\chi^2$ distributions but with slightly different underlying assumptions.
+
+First, goodness-of-fit tests are used when comparing observed data to expected data. For example, this could be used to determine if respondent demographics (the observed data in the sample) match known population information (the expected data). In this case, we can set up the hypothesis test as follows:
+
+- $H0:p_1=\pi_1, p_2=\pi_2, \dots, p_k=\pi_k$ where pi is the observed proportion for category i, $\pi_i$ is the expected proportion for category i, and k
+is the number of categories
+- $H_A$:at least one level of pi does not match $\pi_i$
+
+Second, tests of independence are used when comparing two types of observed data to see if there is a relationship. For example, this could be used to determine if the proportion of respondents who voted for each political party in the presidential election matches the proportion of respondents who voted for each political party in a local election. In this case, we can set up the hypothesis test as follows:
+
+- $H_0$: The two variables/factors are independent
+- $H_A$: The two variables/factors are not independent
+
+Third, tests of homogeneity are used to compare two distributions to see if they match. For example, this could be used to determine if the highest education achieved is the same for both men and women. In this case, we can set up the hypothesis test as follows:
+
+- $H_0:p_{1a}=p_{1b}, p_{2a}=p_{2b}, \dots, p_{ka}=p_{kb}$ where $p_{ia}$ is the observed proportion of category i for subgroup a, $p_{ib}$ is the observed proportion of category i for subgroup a, and k is the number of categories
+- $H_A$: at least one category of $p_{ia}$ does not match $p_{ib}$.
+
+```
+svygofchisq(formula, p, design, na.rm = TRUE, ...)
+```
+
+- formula: Formula specifying a single factor variable
+- p: Vector of probabilities for the categories of the factor in the correct order. If the probabilities do not sum to 1, they are rescaled to sum to 1.
+- design: Survey design object
+
+```
+svychisq(formula, design,
+         statistic = c("F", "Chisq", "Wald", "adjWald",
+                       "lincom", "saddlepoint"),
+         na.rm = TRUE)
+```
+
+- formula: Model formula specifying the table (shown in examples)
+- design: Survey design object
+- statistic: Type of test statistic to use in test (details below)
+
+For tests of homogeneity (when comparing cross-tabulations), the `F` or `Chisq` statistics should be used18. The F statistic is the default.
+
+For tests of independence, the `Wald` and `adjWald` are recommended as they provide a better adjustment for variable comparisons (Lumley 2010). If the data have a small number of primary sampling units (PSUs) compared to the degrees of freedom, then the `adjWald` statistic should be used to account for this. The `lincom` and `saddlepoint` statistics are available for more complicated data structures. 
+
+## Goodness-of-fit
+
+Based on the data from the 2020 American Community Survey (ACS) 5-year estimates20, the education distribution of those aged 18+ in the United States (among the 50 states and the District of Columbia) is as follows:
+
+- 11% had less than a high school degree
+- 27% had a high school degree
+- 29% had some college or an associate’s degree
+- 33% had a bachelor’s degree or higher
+
+If we want to see if the weighted distribution from the ANES 2020 data matches this distribution, we could set up the hypothesis as follows:
+
+- $H_0:p_1=0.11, p_2=0.27, p_3=0.29, p_4=0.33$
+- $HA$: at least one of the education levels does not match between the ANES and the ACS
+
+```{r}
+anes_des %>%
+  drop_na(Education) %>%
+  group_by(Education) %>%
+  summarize(p = survey_mean())
+```
+
+```{r}
+anes_des_edu <- anes_des %>%
+  mutate(
+    Education2 = fct_collapse(Education,
+      "Bachelor or Higher" = c(
+        "Bachelor's",
+        "Graduate"
+      )
+    )
+  )
+```
+
+```{r}
+anes_des_edu %>%
+  drop_na(Education2) %>%
+  group_by(Education2) %>%
+  summarize(p = survey_mean())
+```
+
+```{r}
+p_exp <- c(0.11, 0.27, 0.29, 0.33)
+```
+
+
+```{r}
+chi_ex1 <- anes_des_edu %>%
+  svygofchisq(
+    formula = ~Education2,
+    p = p_exp,
+    design = .,
+    na.rm = T
+  )
+chi_ex1
+```
+
+At least 1 poportion does not match.
+
+```{r}
+ex1_table <- anes_des_edu %>%
+  drop_na(Education2) %>%
+  group_by(Education2) %>%
+  summarize(Observed = survey_mean(vartype = "ci")) %>%
+  rename(Education = Education2) %>%
+  mutate(Expected = p_exp) %>%
+  select(Education, Expected, everything())
+ex1_table
+```
+
+```{r}
+ex1_table %>%
+  pivot_longer(
+    cols = c("Expected", "Observed"),
+    names_to = "Names",
+    values_to = "Proportion"
+  ) %>%
+  mutate(
+    Observed_low = if_else(Names == "Observed", Observed_low, NA_real_),
+    Observed_upp = if_else(Names == "Observed", Observed_upp, NA_real_),
+    Names = if_else(Names == "Observed", "ANES (observed)",
+      "ANES (expected)"
+    )
+  ) %>%
+  ggplot(aes(x = Education, y = Proportion, color = Names)) +
+  geom_point(alpha = 0.75, size = 2) +
+  geom_errorbar(aes(ymin = Observed_low, ymax = Observed_upp),
+    width = 0.26
+  ) +
+  theme_bw() +
+  scale_color_manual(name = "Type", values = c("green", "blue")) +
+  theme(legend.position = "bottom", legend.title = element_blank()) +
+  labs(title = "Expected and Observed poportions with confidence intervals")
+```
+
+## Test of independence
+
+ ANES asked respondents two questions about trust:
+
+- Question text: “How often can you trust the federal government to do what is right?” (American National Election Studies 2021)
+- Question text: “How often can you trust other people?” (American National Election Studies 2021)
+
+If we want to see if the distributions of these two questions are similar or not, we can conduct a test of independence. Here is how the hypothesis could be set up:
+
+- $H_0$: People’s trust in the federal government and their trust in other people are independent (i.e., not related)
+- $H_A$: People’s trust in the federal government and their trust in other people are not independent (i.e., they are related)
+
+```{r}
+chi_ex2 <- anes_des %>%
+  svychisq(
+    formula = ~ TrustGovernment + TrustPeople,
+    design = .,
+    statistic = "Wald",
+    na.rm = T
+  )
+chi_ex2
+```
+
+The 2 variables do not appear independent.
+
+Counts:
+
+```{r}
+chi_ex2$observed
+```
+
+### Proportions method 1
+
+```{r}
+chi_ex2$observed %>%
+  as_tibble() %>%
+  group_by(TrustPeople) %>%
+  mutate(prop = round(n / sum(n), 3)) %>%
+  select(-n) %>%
+  pivot_wider(names_from = TrustPeople, values_from = prop) %>%
+  gt(rowname_col = "TrustGovernment") %>%
+  tab_stubhead(label = "Trust in Government") %>%
+  tab_spanner(
+    label = "Trust in People",
+    columns = everything()
+  ) %>%
+  cols_label(
+    `Most of the time` = md("Most of<br/>the time"),
+    `About half the time` = md("About half<br />the time"),
+    `Some of the time` = md("Some of<br />the time")
+  )
+```
+
+### Proportions method 2
+
+```{r}
+chi_ex2_obs <- anes_des %>%
+  drop_na(TrustPeople, TrustGovernment) %>%
+  group_by(TrustPeople, TrustGovernment) %>%
+  summarize(
+    Observed = round(survey_mean(vartype = "ci"), 3),
+    .groups = "drop"
+  )
+```
+
+```{r}
+chi_ex2_obs %>%
+  mutate(prop = paste0(
+    Observed, " (", Observed_low, ", ", Observed_upp, ")"
+  )) %>%
+  select(TrustGovernment, TrustPeople, prop) %>%
+  pivot_wider(names_from = TrustPeople, values_from = prop) %>%
+  gt(rowname_col = "TrustGovernment") %>%
+  tab_stubhead(label = "Trust in Government") %>%
+  tab_spanner(
+    label = "Trust in People",
+    columns = everything()
+  ) %>%
+  tab_options(page.orientation = "landscape")
+```
+
+With ggplot
+
+```{r}
+chi_ex2_obs %>%
+  mutate(
+    TrustPeople = fct_reorder(
+      str_c("Trust in People:\n", TrustPeople),
+      order(TrustPeople)
+    )
+  ) %>%
+  ggplot(aes(x = TrustGovernment, y = Observed, color = TrustGovernment)) +
+  facet_wrap(~TrustPeople, ncol = 5) +
+  geom_point() +
+  geom_errorbar(aes(ymin = Observed_low, ymax = Observed_upp)) +
+  ylab("Proportion") +
+  xlab("") +
+  theme_bw() +
+  scale_color_viridis_d(name = "Trust in Government") +
+  theme(
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    legend.position = "bottom"
+  ) +
+  guides(col = guide_legend(nrow = 2))
+```
+
+## Test of Homogeneity
+
+See if there is a difference between age groups in the 2020 election:
+
+```{r}
+chi_ex3 <- anes_des %>%
+  drop_na(VotedPres2020_selection, AgeGroup) %>%
+  svychisq(
+    formula = ~ AgeGroup + VotedPres2020_selection,
+    design = .,
+    statistis = "Chisq",
+    na.rm = T
+  )
+chi_ex3
+```
+
+```{r}
+chi_ex3_obs <- anes_des %>%
+  filter(VotedPres2020 == "Yes") %>%
+  drop_na(VotedPres2020_selection, AgeGroup) %>%
+  group_by(VotedPres2020_selection, AgeGroup) %>%
+  summarize(Observed = round(survey_mean(vartype = "ci"), 3))
+
+chi_ex3_obs_table <- chi_ex3_obs %>%
+  mutate(prop = paste0(
+    Observed, " (", Observed_low, ", ",
+    Observed_upp, ")"
+  )) %>%
+  select(AgeGroup, VotedPres2020_selection, prop) %>%
+  pivot_wider(
+    names_from = VotedPres2020_selection,
+    values_from = prop
+  ) %>%
+  gt(rowname_col = "AgeGroup") %>%
+  tab_stubhead(label = "Age Group")
+chi_ex3_obs_table
+```
+
+
+
