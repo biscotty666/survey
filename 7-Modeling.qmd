@@ -1,0 +1,455 @@
+---
+title: "Modeling"
+format: gfm
+---
+
+
+```{r, setup, include=FALSE}
+knitr::opts_chunk$set(paged.print = FALSE)
+```
+
+
+# Setup
+
+Reference prior chapter
+
+```{r}
+#| message: false
+library(tidyverse)
+library(survey)
+library(srvyr)
+library(broom)
+library(gt)
+library(prettyunits)
+load("data/anes_2020.rda")
+load("data/recs_2020.rda")
+```
+
+```{r}
+targetpop <- 231592693
+
+anes_adjwgt <- anes_2020 %>%
+  mutate(Weight = Weight / sum(Weight) * targetpop)
+
+anes_des <- anes_adjwgt %>%
+  as_survey_design(
+    weights = Weight,
+    strata = Stratum,
+    ids = VarUnit,
+    nest = TRUE
+  )
+recs_des <- recs_2020 %>%
+  as_survey_rep(
+    weights = NWEIGHT,
+    repweights = NWEIGHT1:NWEIGHT60,
+    type = "JK1",
+    scale = 59 / 60,
+    mse = TRUE
+  )
+```
+
+# Analysis of Variance
+
+- $H_0:\mu_1=\mu_2=\dots=\mu_k$ where $\mu_i$ is the mean outcome for group i
+- $H_A$:At least one mean is different
+
+Some assumptions when using ANOVA on survey data include:
+
+- The outcome variable is normally distributed within each group.
+- The variances of the outcome variable between each group are approximately equal.
+- We do NOT assume independence between the groups as with ANOVA on non-survey data. The covariance is accounted for in the survey design.
+
+```
+des_obj %>%
+  svyglm(
+    formula = outcome ~ group,
+    design = .,
+    na.action = na.omit,
+    df.resid = NULL
+  )
+```
+
+- formula: formula in the form of `outcome~group`. The group variable must be a factor or character.
+- design: a `tbl_svy` object created by `as_survey`
+- na.action: handling of missing data
+- df.resid: degrees of freedom for Wald tests (optional); defaults to using `degf(design)-(g-1)` where g is the number of groups
+
+In RECS, respondents are asked what temperature they set their thermostat to during the evening when using A/C during the summer23. To analyze these data, we filter the respondents to only those using A/C (ACUsed)24. Then, if we want to see if there are regional differences, we can use group_by(). A descriptive analysis of the temperature at night (SummerTempNight) set by region and the sample sizes is displayed below. 
+
+```{r}
+recs_des %>%
+  filter(ACUsed) %>%
+  group_by(Region) %>%
+  summarize(
+    SMN = survey_mean(SummerTempNight, na.rm = T),
+    n = unweighted(n()),
+    n_na = unweighted(sum(is.na(SummerTempNight)))
+  )
+```
+
+In the following code, we test whether this temperature varies by region by first using `svyglm()` to run the test and then using `broom::tidy()` to display the output. Note that the temperature setting is set to NA when the household does not use A/C, and since the default handling of NAs is `na.action=na.omit`, records that do not use A/C are not included in this regression.
+
+```{r}
+anova_out <- recs_des %>%
+  svyglm(
+    design = .,
+    formula = SummerTempNight ~ Region
+  )
+tidy(anova_out)
+```
+
+Change reference level to Midwest
+
+```{r}
+recs_des %>%
+  mutate(Region = fct_relevel(Region, "Midwest", after = 0)) %>%
+  svyglm(
+    design = .,
+    formula = SummerTempNight ~ Region
+  ) %>%
+  tidy() %>%
+  mutate(p.value = pretty_p_value(p.value)) %>%
+  gt() %>%
+  fmt_number()
+```
+
+```{r}
+print_table <- function(table) {
+  tidy(table) %>%
+    mutate(p.value = pretty_p_value(p.value)) %>%
+    gt() %>%
+    fmt_number()
+}
+recs_des %>%
+  mutate(Region = fct_relevel(Region, "Midwest", after = 0)) %>%
+  svyglm(
+    design = .,
+    formula = SummerTempNight ~ Region
+  ) %>%
+  print_table()
+```
+
+
+# Normal Linear Regression
+
+Assumptions in normal linear regression using survey data include:
+
+- The residuals ($\epsilon_i$) are normally distributed, but there is not an assumption of independence, and the correlation structure is captured in the survey design object
+- There is a linear relationship between the outcome variable and the independent variables
+- The residuals are homoscedastic; that is, the error term is the same across all values of independent variables
+
+```
+des_obj %>%
+  svyglm(
+    formula = outcomevar ~ x1 + x2 + x3,
+    design = .,
+    na.action = na.omit,
+    df.resid = NULL
+  )
+```
+
+## Linear regression with a single variable
+
+On RECS, we can obtain information on the square footage of homes25 and the electric bills. We assume that square footage is related to the amount of money spent on electricity and examine a model for this. Before any modeling, we first plot the data to determine whether it is reasonable to assume a linear relationship.
+
+```{r}
+book_colors <- c("#0b3954", "#087e8b", "#bfd7ea", "#ff8484", "#8d6b94")
+```
+
+
+```{r}
+recs_2020 %>%
+  ggplot(aes(
+    x = TOTSQFT_EN,
+    y = DOLLAREL,
+    weight = NWEIGHT / 1e6
+  )) +
+  geom_hex() +
+  scale_fill_gradientn(
+    guide = "colorbar",
+    name = "Housing Units\n(millions)",
+    labels = scales::comma,
+    colors = book_colors[c(3, 2, 1)]
+  ) +
+  xlab("Total square footage") +
+  ylab("Amount spent on electricity") +
+  scale_y_continuous(labels = scales::dollar_format()) +
+  scale_x_continuous(labels = scales::comma_format()) +
+  theme_minimal()
+```
+
+```{r}
+m_electric_sqft <- recs_des %>%
+  svyglm(
+    design = .,
+    formula = DOLLAREL ~ TOTSQFT_EN,
+    na.action = na.omit
+  )
+```
+
+```{r}
+print_table(m_electric_sqft)
+```
+
+## Linear regression with multiple variables and interactions
+
+```{r}
+m_electric_multi <- recs_des %>%
+  svyglm(
+    design = .,
+    formula = DOLLAREL ~ (Region + Urbanicity + TOTSQFT_EN + ACUsed)^2 - 1,
+    na.action = na.omit
+  )
+print_table(m_electric_multi)
+```
+
+To test whether coefficients for a term are different from zero, the regTermTest() function can be used. For example, in the above regression, we can test whether the interaction of region and urbanicity is significant as follows:
+
+```{r}
+urb_reg_test <- regTermTest(m_electric_multi, ~ Urbanicity:Region)
+urb_reg_test
+```
+
+Significant interaction between urbanicity and region.
+
+Use `augment()` to examine the model. As it was not written exactly for this class of objects, a little tweaking needs to be done after using `augment()`. To obtain the standard error of the predicted values (`.se.fit`), we need to use the `attr()` function on the predicted values (`.fitted`) created by `augment()`. Additionally, the predicted values created are outputted with a type of svrep. If we want to plot the predicted values, we need to use `as.numeric()` to get the predicted values into a numeric format to work with. 
+
+```{r}
+#| warning: false
+fit_stats <- augment(m_electric_multi) %>%
+  mutate(
+    .se.fit = sqrt(attr(.fitted, "var")),
+    .fitted = as.numeric(.fitted)
+  )
+fit_stats
+```
+
+Check residuals for patterns.
+
+```{r}
+fit_stats %>%
+  ggplot(aes(x = .fitted, y = .resid)) +
+  geom_point(alpha = .1) +
+  geom_hline(yintercept = 0, color = "red") +
+  theme_minimal() +
+  xlab("Fitted value of electricity cost") +
+  ylab("Residual of model") +
+  scale_y_continuous(labels = scales::dollar_format()) +
+  scale_x_continuous(labels = scales::dollar_format())
+```
+
+We do not see a strong pattern indicating that our assumption of heteroscedasticity may hold.
+
+Predictions:
+
+```{r}
+add_data <- recs_2020[1, ] %>%
+  select(
+    DOEID, Region, Urbanicity,
+    TOTSQFT_EN, ACUsed,
+    DOLLAREL
+  ) %>%
+  rbind(
+    tibble(
+      DOEID = NA,
+      Region = "South",
+      Urbanicity = "Urban Area",
+      TOTSQFT_EN = 2500,
+      ACUsed = TRUE,
+      DOLLAREL = NA
+    )
+  ) %>%
+  slice_tail()
+add_data
+```
+
+```{r}
+pred_data <- augment(m_electric_multi, newdata = add_data) %>%
+  mutate(
+    .se.fit = sqrt(attr(.fitted, "var")),
+    .fitted = as.numeric(.fitted)
+  )
+pred_data
+```
+
+it is predicted that the energy expenditure would be $1,715
+
+# Logistic regression
+
+```
+des_obj %>%
+  svyglm(
+    formula = outcomevar ~ x1 + x2 + x3,
+    design = .,
+    na.action = na.omit,
+    df.resid = NULL,
+    family = quasibinomial
+  )
+```
+
+The quasibinomial family has a default logit link, which is specified in the equations above. When specifying the outcome variable, it is likely specified in one of three ways with survey data:
+
+- A two-level factor variable where the first level of the factor indicates a “failure,” and the second level indicates a “success”
+- A numeric variable which is 1 or 0 where 1 indicates a success
+- A logical variable where TRUE indicates a success
+
+## Logistic regression with single variable
+
+```{r}
+anes_des_der <- anes_des %>%
+  mutate(TrustGovernmentUsually = case_when(
+    is.na(TrustGovernment) ~ NA,
+    TRUE ~ TrustGovernment %in% c("Always", "Most of the time")
+  ))
+```
+
+```{r}
+anes_des_der %>%
+  group_by(VotedPres2020_selection) %>%
+  summarize(
+    pct_trust = survey_mean(TrustGovernmentUsually,
+      na.rm = TRUE,
+      proportion = TRUE,
+      vartype = "ci"
+    ),
+    .groups = "drop"
+  ) %>%
+  filter(complete.cases(.)) %>%
+  ggplot(aes(
+    x = VotedPres2020_selection, y = pct_trust,
+    fill = VotedPres2020_selection
+  )) +
+  geom_bar(stat = "identity") +
+  geom_errorbar(aes(ymin = pct_trust_low, ymax = pct_trust_upp),
+    width = .2
+  ) +
+  scale_fill_manual(values = c("#0b3954", "#bfd7ea", "#8d6b94")) +
+  xlab("Election choice (2020)") +
+  ylab("Usually trust the government") +
+  scale_y_continuous(labels = scales::percent) +
+  guides(fill = "none") +
+  theme_minimal()
+```
+
+It appears that Trump voters have higher trust in government.
+
+Check by fitting the model.
+
+```{r}
+logistic_trust_vote <- anes_des_der %>%
+  svyglm(
+    design = .,
+    formula = TrustGovernmentUsually ~ VotedPres2020_selection,
+    family = quasibinomial
+  )
+print_table(logistic_trust_vote)
+```
+
+To view with log odds:
+
+```{r}
+tidy(logistic_trust_vote, exponentiate = T) %>%
+  select(term, estimate) %>%
+  gt() %>%
+  fmt_number()
+```
+
+Predict values
+
+```{r}
+#| warning: false
+logistic_trust_vote %>%
+  augment(type.predict = "response") %>%
+  mutate(
+    .se.fit = sqrt(attr(.fitted, "var")),
+    .fitted = as.numeric(.fitted)
+  ) %>%
+  select(
+    TrustGovernmentUsually,
+    VotedPres2020_selection,
+    .fitted,
+    .se.fit
+  )
+```
+
+## Interaction effects
+
+If we’re interested in understanding the demographics of people who voted for Biden among all voters in 2020, we could include the indicator of whether respondents voted early (`EarlyVote2020`) and their income group (`Income7`) in our model.
+
+```{r}
+anes_des_ind <- anes_des %>%
+  filter(!is.na(VotedPres2020_selection)) %>%
+  mutate(VoteBiden = case_when(
+    VotedPres2020_selection == "Biden" ~ 1,
+    TRUE ~ 0
+  ))
+```
+
+With only income and early voting:
+
+```{r}
+log_biden_main <- anes_des_ind %>%
+  mutate(
+    EarlyVote2020 = fct_relevel(EarlyVote2020, "No", after = 0)
+  ) %>%
+  svyglm(
+    design = .,
+    formula = VoteBiden ~ EarlyVote2020 + Income7,
+    family = quasibinomial
+  )
+print_table(log_biden_main)
+```
+
+```{r}
+log_biden_int <- anes_des_ind %>%
+  mutate(
+    EarlyVote2020 = fct_relevel(EarlyVote2020, "No", after = 0)
+  ) %>%
+  svyglm(
+    design = .,
+    formula = VoteBiden ~ (EarlyVote2020 + Income7)^2,
+    family = quasibinomial
+  )
+print_table(log_biden_int)
+```
+
+The results from the interaction model (see Table 7.9) show that one interaction between early voting behavior and income is significant. 
+
+```{r}
+#| warning: false
+log_biden_pred <- log_biden_int %>%
+  augment(type.predict = "response") %>%
+  mutate(
+    .se.fit = sqrt(attr(.fitted, "var")),
+    .fitted = as.numeric(.fitted)
+  ) %>%
+  select(VoteBiden, EarlyVote2020, Income7, .fitted, .se.fit)
+```
+
+```{r}
+log_biden_pred %>%
+  filter(VoteBiden == 1) %>%
+  distinct() %>%
+  arrange(EarlyVote2020, Income7) %>%
+  ggplot(aes(
+    x = EarlyVote2020, y = .fitted,
+    group = Income7, color = Income7, linetype = Income7
+  )) +
+  geom_line(linewidth = 1.1) +
+  scale_color_manual(values = colorRampPalette(book_colors)(7)) +
+  ylab("Predicted Probability of Voting for Biden") +
+  labs(
+    x = "Voted Early",
+    color = "Income",
+    linetype = "Income"
+  ) +
+  coord_cartesian(ylim = c(0, 1)) +
+  guides(fill = "none") +
+  theme_minimal()
+```
+
+
+
+
+
+

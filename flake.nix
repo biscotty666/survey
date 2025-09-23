@@ -51,6 +51,7 @@
               gt
               gtsummary
               haven
+              hexbin
               janitor
               labelled
               naniar
