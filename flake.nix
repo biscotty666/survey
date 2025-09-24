@@ -19,13 +19,17 @@
         inherit system;
         config.allowUnfree = true;
       };
-      myvscode = pkgs.vscode-with-extensions.override {
-        vscodeExtensions = (with pkgs.vscode-extensions; [
-          enkia.tokyo-night
-          sainnhe.gruvbox-material
-          vscodevim.vim
-          reditorsupport.r
-        ]);};
+      
+      srvyrexploR = pkgs.rPackages.buildRPackage {
+        name = "srvyrexploR";
+        src = pkgs.fetchFromGitHub{
+          owner = "tidy-survey-r";
+          repo = "srvyrexploR";
+          rev = "7f3221451b0f7933dee23ac9167ee84d60e4c6d2";
+          sha256 = "05qlx8mifqd03qmar4a7lh3gqwywjkxsf59i40s29xzdxxyspkqw";
+        };
+   propagatedBuildInputs = with pkgs.rPackages; [bslib evaluate jsonlite knitr stringr tinytex yaml xfun];
+      };
       in
       {
         devShells.default = pkgs.mkShell {
@@ -40,12 +44,12 @@
             radianWrapper
             grass
             inkscape
-            myvscode
             (with rPackages; [
               DiagrammeR
               Matrix
               bookdown
               broom
+              cardx
               censusapi
               ggpattern
               gt
@@ -63,6 +67,7 @@
               rnaturalearthdata
               sf
               srvyr
+              srvyrexploR
               styler
               survey
               survival
