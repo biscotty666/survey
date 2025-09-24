@@ -1,0 +1,385 @@
+---
+title: "Sample Designs and Replicate Weights"
+format: gfm
+---
+
+
+```{r, setup, include=FALSE}
+knitr::opts_chunk$set(paged.print = FALSE)
+```
+
+
+# Setup
+
+Reference prior chapter
+
+```{r}
+#| message: false
+library(tidyverse)
+library(survey)
+library(srvyr)
+data(api)
+data(scd)
+load("data/recs_2015.rda")
+load("data/recs_2020.rda")
+```
+
+# Simple Random Sample Without Replacement (SRS)
+
+Different from standard SRS because it includes a finite population correction (FPC) factor $\left(1 - \frac{n}{N}\right)$ in the standard error calculation:
+
+$$
+se(\bar{y})=\sqrt{\frac{s^2}{n}\left( 1-\frac{n}{N} \right)}
+$$
+
+For small sample size, it is negligible.
+
+```
+srs_des <- dat %>%
+  as_survey_design(weights = wtvar,
+                   fpc = fpcvar)
+```
+
+`weights` and `fpc` are not required if not available.
+
+One of the example datasets we use is from the Academic Performance Index Program (APIP). The APIP program administered by the California Department of Education, and the {survey} package includes a population file (sample frame) of all schools with at least 100 students and several different samples pulled from that data using different sampling methods. For this first example, we use the apisrs dataset, which contains an SRS of 200 schools.
+
+```{r}
+apisrs_slim <- apisrs %>%
+  as_tibble() %>%
+  arrange(dnum, snum) %>%
+  select(cds, dnum, snum, dname, sname, fpc, pw)
+apisrs_slim
+```
+
+```{r}
+apisrs_des <- apisrs_slim %>%
+  as_survey_design(
+    weights = pw,
+    fpc = fpc
+  )
+apisrs_des
+```
+
+In the printed design object, the design is described as an “Independent Sampling design,” which is another term for SRS. The ids are specified as 1, which means there is no clustering.
+
+```{r}
+summary(apisrs_des)
+```
+
+# Simple Random Sample With Replacement (SRSWR)
+
+Syntax is the same as SRS, but there is no FPC correction.
+
+The {survey} package does not include an example of SRSWR. To illustrate this design, we need to create an example. 
+
+```{r}
+set.seed(409963)
+
+apisrswr <- apipop %>%
+  as_tibble() %>%
+  slice_sample(n = 200, replace = T) %>%
+  select(cds, dnum, snum, dname, sname) %>%
+  mutate(weight = nrow(apipop) / 200)
+head(apisrswr)
+```
+
+Duplicates should be kept.
+
+```{r}
+apisrswr %>%
+  group_by(cds) %>%
+  filter(n() > 1) %>%
+  arrange(cds)
+```
+
+```{r}
+apisrswr_des <- apisrswr %>%
+  as_survey_design(weights = weight)
+apisrswr_des
+```
+
+```{r}
+summary(apisrswr_des)
+```
+
+# Stratified Sampling
+
+Requires a `strata` argument.
+
+```{r}
+apistrat_slim <- apistrat %>%
+  as_tibble() %>%
+  arrange(dnum, snum) %>%
+  select(cds, dnum, snum, dname, sname, stype, fpc, pw)
+apistrat_slim %>% count(stype, fpc)
+```
+
+```{r}
+apistrat_des <- apistrat_slim %>%
+  as_survey_design(
+    strata = stype,
+    weights = pw,
+    fpc = fpc
+  )
+apistrat_des
+summary(apistrat_des)
+```
+
+# Clustered Sampling
+
+Requires an `ids` argument specifying the cluster level variable(s).
+
+```
+clus2_des <- dat %>%
+ as_survey_design(weights = wtvar, 
+                  ids = c(PSU, SSU), 
+                  fpc = c(A, B))
+```
+where `PSU` and `SSU` are the variables indicating the `PSU` and `SSU` identifiers, and `A` and `B` are the variables indicating the population sizes for each level. The `fpc` is not needed if sampled with replacement or the population size is very large. If clusters within each stratum have the same identifier, must use `nest = TRUE`.
+
+The survey package includes a two-stage cluster sample data, apiclus2, in which school districts were sampled, and then a random sample of five schools was selected within each district. For districts with fewer than five schools, all schools were sampled. School districts are identified by dnum, and schools are identified by snum. The variable fpc1 indicates how many districts there are in California (the total number of PSUs or A), and fpc2 indicates how many schools were in a given district with at least 100 students (the total number of SSUs or B). The data include a row for each school. In the data printed below, there are 757 school districts, as indicated by fpc1, and there are nine schools in District 731, one school in District 742, two schools in District 768, and so on as indicated by fpc2. For illustration purposes, the object apiclus2_slim has been created from apiclus2, which subsets the data to only the necessary columns and sorts the data.
+
+```{r}
+apiclus2_slim <- apiclus2 %>%
+  as_tibble() %>%
+  arrange(desc(dnum), snum) %>%
+  select(cds, dnum, snum, fpc1, fpc2, pw)
+apiclus2_slim
+```
+
+```{r}
+apiclus2_des <- apiclus2_slim %>%
+  as_survey_design(
+    ids = c(dnum, snum),
+    fpc = c(fpc1, fpc2),
+    weights = pw
+  )
+apiclus2_des
+```
+
+```{r}
+summary(apiclus2_des)
+```
+
+# Replicate Weights
+
+There are several types of replicate weights, including balanced repeated replication (BRR), Fay’s BRR, jackknife, and bootstrap methods. An overview of the process for using replicate weights is as follows:
+
+- Divide the sample into subsample replicates that mirror the design of the sample
+- Calculate weights for each replicate using the same procedures for the full-sample weight (i.e., nonresponse and post-stratification)
+- Calculate estimates for each replicate using the same method as the full-sample estimate
+- Calculate the estimated variance, which is proportional to the variance of the replicate estimates
+
+# Balanced Repeated Replication Method (BRR)
+
+The balanced repeated replication (BRR) method requires a stratified sample design with two PSUs in each stratum. Each replicate is constructed by deleting one PSU per stratum using a Hadamard matrix. 
+
+Replicate weights generally come in groups and are sequentially numbered, such as PWGTP1, PWGTP2, …, PWGTP80 for the person weights in the American Community Survey (ACS) 
+
+To specify a BRR design, we need to specify the weight variable (weights), the replicate weight variables (repweights), the type of replicate weights as BRR (type = BRR), and whether the mean squared error should be used (mse = TRUE) or not (mse = FALSE).
+
+Equivalent syntax
+
+```
+brr_des <- dat %>%
+  as_survey_rep(weights = WT0,
+                repweights = all_of(str_c("WT", 1:20)), 
+                type = "BRR",
+                mse = TRUE)
+
+brr_des <- dat %>%
+  as_survey_rep(weights = WT0,
+                repweights = num_range("WT", 1:20),
+                type = "BRR",
+                mse = TRUE)
+```
+
+Equivalent syntax
+
+```
+brr_des <- dat %>%
+  as_survey_rep(weights = WT,
+                repweights = all_of(str_c("REPWT", 1:20)),
+                type = "BRR",
+                mse = TRUE)
+
+brr_des <- dat %>%
+  as_survey_rep(weights = WT,
+                repweights = starts_with("REPWT"),
+                type = "BRR",
+                mse = TRUE)
+                
+brr_des <- dat %>%
+  as_survey_rep(weights = WT,
+                repweights = REPWT1:REPWT20,
+                type = "BRR",
+                mse = TRUE)
+```
+
+The {survey} package includes a data example from section 12.2 of Levy and Lemeshow (2013). In this fictional data, two out of five ambulance stations were sampled from each of three emergency service areas (ESAs); thus BRR weights are appropriate with two PSUs (stations) sampled in each stratum (ESA). In the code below, we create BRR weights as was done by Levy and Lemeshow (2013).
+
+```{r}
+scdbrr <- scd %>%
+  as_tibble() %>%
+  mutate(
+    wt = 5 / 2,
+    rep1 = 2 * c(1, 0, 1, 0, 1, 0),
+    rep2 = 2 * c(1, 0, 0, 1, 0, 1),
+    rep3 = 2 * c(0, 1, 1, 0, 0, 1),
+    rep4 = 2 * c(0, 1, 0, 1, 1, 0)
+  )
+
+scdbrr
+```
+
+```{r}
+scdbrr_des <- scdbrr %>%
+  as_survey_rep(
+    type = "BRR",
+    repweights = starts_with("rep"),
+    combined_weights = F,
+    weight = wt
+  )
+scdbrr_des
+```
+
+```{r}
+summary(scdbrr_des)
+```
+
+Note that combined_weights was specified as FALSE because these weights are simply specified as 0 and 2 and do not incorporate the overall weight. 
+
+# Fay's BRR Method
+
+```
+fay_des <- dat %>%
+  as_survey_rep(weights = WT0,
+                repweights = num_range("WT", 1:20),
+                type = "Fay",
+                mse = TRUE,
+                rho = 0.3)
+```
+
+`rho` is Fay's multiplier
+
+The 2015 RECS (U.S. Energy Information Administration 2017) uses Fay’s BRR weights with the final weight as NWEIGHT and replicate weights as BRRWT1 - BRRWT96, and the documentation specifies a Fay’s multiplier of 0.5. On the file, DOEID is a unique identifier for each respondent, TOTALDOL is the total energy cost, TOTSQFT_EN is the total square footage of the residence, and REGOINC is the census region. 
+
+```{r}
+recs_2015_des <- recs_2015 %>%
+  as_survey_rep(
+    weights = NWEIGHT,
+    repweights = BRRWT1:BRRWT96,
+    type = "Fay",
+    rho = 0.5,
+    mse = T,
+    variables = c(DOEID, TOTALDOL, TOTSQFT_EN, REGIONC)
+  )
+recs_2015_des
+```
+
+```{r}
+summary(recs_2015_des)
+```
+
+# Jacknife Method
+
+Removes one PSU at a time.
+
+To specify the jackknife method, we use the survey documentation to understand the type of jackknife (1, n, or 2) and the multiplier. In the syntax, we need to specify the weight variable (weights), the replicate weight variables (repweights), the type of replicate weights as jackknife 1 (type = "JK1"), n (type = "JKN"), or 2 (type = "JK2"), whether the mean squared error should be used (mse = TRUE) or not (mse = FALSE), and the multiplier (scale). For example, if the survey is a jackknife 1 method with a multiplier of αr=(R−1)/R=19/20=0.95, the dataset has WT0 for the main weight and 20 replicate weights indicated as WT1, WT2, …, WT20, we use the following syntax:
+
+```
+jk1_des <- dat %>%
+  as_survey_rep(
+    weights = WT0,
+    repweights = num_range("WT", 1:20),
+    type = "JK1",
+    mse = TRUE,
+    scale = 0.95
+  )
+```
+The 2020 RECS (U.S. Energy Information Administration 2023c) uses jackknife weights with the final weight as NWEIGHT and replicate weights as NWEIGHT1 - NWEIGHT60 with a scale of (R−1)/R=59/60. On the file, DOEID is a unique identifier for each respondent, TOTALDOL is the total cost of energy, TOTSQFT_EN is the total square footage of the residence, and REGOINC is the census region. 
+
+```{r}
+recs_des <- recs_2020 %>%
+  as_survey_rep(
+    weights = NWEIGHT,
+    repweights = NWEIGHT1:NWEIGHT60,
+    type = "JK1",
+    scale = 59 / 60,
+    mse = T,
+    variables = c(DOEID, TOTALDOL, TOTSQFT_EN, REGIONC)
+  )
+recs_des
+summary(recs_des)
+```
+
+# Bootstrap Method
+
+To specify a bootstrap method, we need to specify the weight variable (weights), the replicate weight variables (repweights), the type of replicate weights as bootstrap (type = "bootstrap"), whether the mean squared error should be used (mse = TRUE) or not (mse = FALSE), and the multiplier (scale). For example, if a dataset had WT0 for the main weight, 20 bootstrap weights indicated WT1, WT2, …, WT20, and a multiplier of α=.02, we use the following syntax:
+
+```
+bs_des <- dat %>%
+  as_survey_rep(
+    weights = WT0,
+    repweights = num_range("WT", 1:20),
+    type = "bootstrap",
+    mse = TRUE,
+    scale = .02
+  )
+```
+Returning to the APIP example, we are going to create a dataset with bootstrap weights to use as an example. In this example, we construct a one-cluster design with 50 replicate weights
+
+```{r}
+apiclus1_slim <-
+  apiclus1 %>%
+  as_tibble() %>%
+  arrange(dnum) %>%
+  select(cds, dnum, fpc, pw)
+```
+
+```{r}
+set.seed(662152)
+apibw <- bootweights(
+  psu = apiclus1_slim$dnum,
+  strata = rep(1, nrow(apiclus1_slim)),
+  fpc = apiclus1_slim$fpc,
+  replicates = 50
+)
+
+bwmata <- apibw$repweights$weights[apibw$repweights$index, ] * apiclus1_slim$pw
+
+apiclus1_slim <- bwmata %>%
+  as.data.frame() %>%
+  set_names(str_c("pw", 1:50)) %>%
+  cbind(apiclus1_slim) %>%
+  as_tibble() %>%
+  select(cds, dnum, fpc, pw, everything())
+
+apiclus1_slim
+```
+
+```{r}
+api1_bs_des <- apiclus1_slim %>%
+  as_survey_rep(
+    weights = pw,
+    repweights = pw1:pw50,
+    type = "bootstrap",
+    scale = 0.02186589,
+    mse = T
+  )
+api1_bs_des
+```
+
+```{r}
+summary(api1_bs_des)
+```
+
+
+
+
+
+
+
+
+
