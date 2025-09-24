@@ -21,8 +21,7 @@ library(srvyr)
 library(broom)
 library(gt)
 library(prettyunits)
-load("data/anes_2020.rda")
-load("data/recs_2020.rda")
+library(srvyrexploR)
 ```
 
 ```{r}
@@ -320,7 +319,7 @@ ex1_table <- anes_des_edu %>%
 ex1_table
 ```
 
-```{r}
+```{r educ-boxes-sdf}
 ex1_table %>%
   pivot_longer(
     cols = c("Expected", "Observed"),
@@ -428,7 +427,7 @@ chi_ex2_obs %>%
 
 With ggplot
 
-```{r}
+```{r tig-boxes}
 chi_ex2_obs %>%
   mutate(
     TrustPeople = fct_reorder(
